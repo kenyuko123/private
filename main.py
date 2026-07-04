@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 GhostChat - Chat ứng dụng realtime với WebSocket
-Chạy trên Linux, Replit, Termux, Windows
 """
 
 import asyncio
@@ -80,7 +79,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .login-container{max-width:420px;width:90%;padding:40px 30px;background:#1a1a1a;border-radius:20px;text-align:center}
         .logo{font-size:72px;display:block;margin-bottom:10px}
         .app-title{font-size:36px;font-weight:700;background:linear-gradient(135deg,#667eea,#764ba2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:30px}
-        .room-input{width:100%;padding:16px;background:#2a2a2a;border:2px solid #3a3a3a;border-radius:12px;color:#e4e6eb;font-size:18px;text-align:center;text-transform:uppercase;outline:none}
+        .room-input{width:100%;padding:16px;background:#2a2a2a;border:2px solid #3a3a3a;border-radius:12px;color:#e4e6eb;font-size:18px;text-align:center;outline:none}
         .room-input:focus{border-color:#667eea}
         .join-btn{width:100%;padding:16px;margin-top:12px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:12px;font-size:18px;font-weight:600;cursor:pointer}
         .join-btn:disabled{opacity:.6;cursor:not-allowed}
@@ -88,7 +87,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .error-message.show{display:block}
         .chat-container{width:100%;height:100vh;max-width:800px;margin:0 auto;display:flex;flex-direction:column;background:#0f0f0f}
         .chat-header{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;background:#1a1a1a;border-bottom:1px solid #2a2a2a}
-        .room-code{color:#667eea;font-weight:600;background:#2a2a2a;padding:4px 12px;border-radius:6px}
+        .room-code{color:#667eea;font-weight:600;background:#2a2a2a;padding:4px 12px;border-radius:6px;font-family:monospace}
         .logout-btn{width:36px;height:36px;background:#2a2a2a;border:none;border-radius:50%;color:#8a8a8a;font-size:20px;cursor:pointer}
         .logout-btn:hover{background:#3a2a2a;color:#ff6b6b}
         .messages-container{flex:1;overflow-y:auto;padding:20px;background:#0f0f0f}
@@ -100,13 +99,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .message.system{align-self:center;background:#1a1a1a;color:#8a8a8a;font-size:13px;padding:6px 16px;border-radius:20px}
         .message .username{font-size:13px;font-weight:600;color:#667eea}
         .message.other .username{color:#8a8a8a}
-        .message .content{font-size:15px}
+        .message .content{font-size:15px;word-break:break-word}
         .message .timestamp{font-size:11px;opacity:.6;margin-top:4px;text-align:right;display:block}
         .message .file-container{background:rgba(0,0,0,.2);border-radius:12px;padding:12px;cursor:pointer}
         .message .file-preview{max-width:100%;border-radius:8px}
         .message .file-preview.image{max-height:300px}
         .message .file-preview.video{max-height:300px;width:100%}
-        .message .file-info{display:flex;align-items:center;gap:8px;font-size:13px;margin-top:8px}
+        .message .file-info{display:flex;align-items:center;gap:8px;font-size:13px;margin-top:8px;flex-wrap:wrap}
+        .message .file-name{word-break:break-all;flex:1}
         .typing-indicator{display:none;padding:8px 16px;color:#8a8a8a;font-style:italic}
         .typing-indicator.show{display:block}
         .input-area{padding:12px 20px 20px;background:#1a1a1a;border-top:1px solid #2a2a2a}
@@ -135,7 +135,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <span class="logo">👻</span>
         <h1 class="app-title">GhostChat</h1>
         <div class="input-group">
-            <input type="text" id="roomInput" class="room-input" placeholder="Nhập mã phòng" maxlength="16" autocomplete="off">
+            <input type="text" id="roomInput" class="room-input" placeholder="Nhập mã phòng" maxlength="16" autocomplete="off" spellcheck="false">
             <button id="joinBtn" class="join-btn">Join Chat</button>
         </div>
         <div id="loginError" class="error-message"></div>
@@ -211,7 +211,7 @@ div.innerHTML=(!isSelf?'<div class="username">'+escapeHtml(msg.username)+'</div>
 }else if(msg.type==='file'){
 const ft=getFileType(msg.file_name);const fi=getFileIcon(ft);const isImage=ft==='image';const isVideo=ft==='video';
 let p='';if(isImage&&msg.file_url)p='<img src="'+msg.file_url+'" class="file-preview image" loading="lazy">';else if(isVideo&&msg.file_url)p='<video class="file-preview video" controls><source src="'+msg.file_url+'"></video>';
-div.innerHTML=(!isSelf?'<div class="username">'+escapeHtml(msg.username)+'</div>':'')+'<div class="file-container" data-url="'+(msg.file_url||'')+'">'+p+'<div class="file-info"><span>'+fi+'</span><span>'+escapeHtml(msg.file_name)+'</span><span>'+formatFileSize(msg.file_size||0)+'</span></div></div><span class="timestamp">'+(msg.timestamp||getTimestamp())+'</span>';
+div.innerHTML=(!isSelf?'<div class="username">'+escapeHtml(msg.username)+'</div>':'')+'<div class="file-container" data-url="'+(msg.file_url||'')+'">'+p+'<div class="file-info"><span>'+fi+'</span><span class="file-name">'+escapeHtml(msg.file_name)+'</span><span>'+formatFileSize(msg.file_size||0)+'</span></div></div><span class="timestamp">'+(msg.timestamp||getTimestamp())+'</span>';
 const c=div.querySelector('.file-container');if(c&&msg.file_url)c.onclick=()=>window.open(msg.file_url,'_blank');
 }
 return div;
@@ -240,7 +240,8 @@ try{const xhr=new XMLHttpRequest();const p=new Promise((resolve,reject)=>{xhr.op
 }
 
 async function joinRoom(){
-const code=roomInput.value.trim().toUpperCase();
+// QUAN TRỌNG: KHÔNG dùng .toUpperCase() nữa
+const code=roomInput.value.trim();
 if(!code){showError('Vui lòng nhập mã phòng');return;}
 if(code.length!==16){showError('Mã phòng phải có đúng 16 ký tự');return;}
 setLoading(true);
@@ -339,7 +340,7 @@ def find_free_port(start_port: int = DEFAULT_PORT, max_attempts: int = 10) -> in
     raise RuntimeError(f"Không tìm thấy cổng trống")
 
 # ===================================================
-# API Endpoints - ĐÃ SỬA LỖI SO SÁNH
+# API Endpoints - ĐÃ SỬA (KHÔNG dùng .upper())
 # ===================================================
 
 @app.get("/", response_class=HTMLResponse)
@@ -359,10 +360,9 @@ async def health_check():
 async def check_room(request: Request):
     try:
         data = await request.json()
-        # QUAN TRỌNG: .strip() để xóa khoảng trắng, .upper() để chuyển hoa
-        code = data.get("room_key", "").strip().upper()
+        # QUAN TRỌNG: KHÔNG dùng .upper(), chỉ .strip() để giữ nguyên chữ hoa/thường
+        code = data.get("room_key", "").strip()
         
-        # Log để debug
         print(f"[DEBUG] Received: '{code}'")
         print(f"[DEBUG] ROOM_KEY: '{ROOM_KEY}'")
         print(f"[DEBUG] Match: {code == ROOM_KEY}")
@@ -441,14 +441,13 @@ async def get_file(room_key: str, filename: str):
     return FileResponse(file_path, media_type=content_type)
 
 # ===================================================
-# WebSocket Endpoint - ĐÃ SỬA LỖI SO SÁNH
+# WebSocket Endpoint
 # ===================================================
 
 @app.websocket("/ws/{room_key}")
 async def websocket_endpoint(websocket: WebSocket, room_key: str):
     global MESSAGES, CLIENTS
     
-    # QUAN TRỌNG: .strip() để xóa khoảng trắng
     room_key = room_key.strip()
     
     print(f"[DEBUG] WebSocket room_key: '{room_key}'")
