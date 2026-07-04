@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GhostChat - Chat ứng dụng realtime với WebSocket
-Hỗ trợ upload file, xem ảnh/video trực tiếp, download file
+Hỗ trợ upload file, xem ảnh/video full màn hình, download file
 """
 
 import asyncio
@@ -42,6 +42,7 @@ DEFAULT_PORT = 8000
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 ROOM_CODE_LENGTH = 16
 TEMP_DIR = Path("temp")
+MAX_HISTORY = 100
 
 # ===================================================
 # Global State
@@ -78,7 +79,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,sans-serif;background:#0a0a0a;color:#e4e6eb;height:100vh;overflow:hidden}
         
         /* ===== SCREENS ===== */
-        .screen{display:none;width:100%;height:100vh;position:fixed;top:0;left:0;background:#0a0a0a}
+        .screen{display:none;width:100%;height:100vh;position:fixed;top:0;left:0;background:#0a0a0a;z-index:1}
         .screen.active{display:flex;justify-content:center;align-items:center}
         
         /* ===== LOGIN ===== */
@@ -128,24 +129,34 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         /* ===== FILE MESSAGE ===== */
         .message .file-wrapper{background:rgba(0,0,0,.2);border-radius:12px;padding:10px;margin-top:2px;position:relative}
         .message.self .file-wrapper{background:rgba(0,0,0,.25)}
-        .message .file-preview{max-width:100%;border-radius:8px;display:block;margin-bottom:6px}
-        .message .file-preview.image{max-height:350px;width:auto;object-fit:contain;cursor:pointer}
+        .message .file-preview{max-width:100%;border-radius:8px;display:block;margin-bottom:6px;cursor:pointer}
+        .message .file-preview.image{max-height:350px;width:auto;object-fit:contain}
         .message .file-preview.video{max-height:350px;width:100%;object-fit:contain;border-radius:8px}
         .message .file-info{display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0;flex-wrap:wrap}
         .message .file-icon{font-size:20px}
         .message .file-name{font-weight:500;flex:1;word-break:break-all;font-size:13px}
         .message .file-size{opacity:.6;font-size:11px;white-space:nowrap}
         
-        /* ===== DOWNLOAD BUTTON ===== */
-        .download-btn{background:rgba(255,255,255,.1);border:none;color:#e4e6eb;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s;display:inline-flex;align-items:center;gap:4px}
-        .download-btn:hover{background:rgba(255,255,255,.2)}
-        .message.self .download-btn{background:rgba(255,255,255,.15)}
-        .message.self .download-btn:hover{background:rgba(255,255,255,.25)}
-        
         /* ===== FILE ACTIONS ===== */
         .file-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}
-        .file-actions .view-btn{background:rgba(102,126,234,.2);border:none;color:#667eea;padding:3px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
-        .file-actions .view-btn:hover{background:rgba(102,126,234,.3)}
+        .file-actions .btn{background:rgba(255,255,255,.1);border:none;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s;display:inline-flex;align-items:center;gap:4px;color:#e4e6eb}
+        .file-actions .btn:hover{background:rgba(255,255,255,.2)}
+        .message.self .file-actions .btn{background:rgba(255,255,255,.15)}
+        .message.self .file-actions .btn:hover{background:rgba(255,255,255,.25)}
+        .file-actions .btn-download{color:#667eea}
+        .file-actions .btn-download:hover{background:rgba(102,126,234,.2)}
+        
+        /* ===== FULLSCREEN VIEWER ===== */
+        .viewer-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.95);z-index:9999;justify-content:center;align-items:center;flex-direction:column}
+        .viewer-overlay.active{display:flex}
+        .viewer-overlay .close-btn{position:absolute;top:20px;right:20px;background:rgba(255,255,255,.1);border:none;color:#fff;font-size:30px;cursor:pointer;padding:10px 18px;border-radius:50%;transition:all .3s;z-index:10000}
+        .viewer-overlay .close-btn:hover{background:rgba(255,255,255,.2);transform:rotate(90deg)}
+        .viewer-overlay .download-btn-top{position:absolute;top:20px;right:80px;background:rgba(255,255,255,.1);border:none;color:#fff;padding:10px 16px;border-radius:8px;cursor:pointer;font-size:16px;transition:all .3s;z-index:10000;display:flex;align-items:center;gap:8px}
+        .viewer-overlay .download-btn-top:hover{background:rgba(255,255,255,.2)}
+        .viewer-overlay .viewer-content{max-width:95%;max-height:90%;object-fit:contain}
+        .viewer-overlay .viewer-content.image-viewer{max-width:95%;max-height:90%;object-fit:contain}
+        .viewer-overlay .viewer-content.video-viewer{max-width:95%;max-height:90%;width:auto}
+        .viewer-overlay .file-name-display{position:absolute;bottom:30px;color:#8a8a8a;font-size:14px;text-align:center;max-width:80%;word-break:break-all}
         
         /* ===== TYPING ===== */
         .typing-indicator{display:none;padding:6px 16px;color:#8a8a8a;font-size:13px;font-style:italic}
@@ -192,6 +203,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             .message .file-preview.image{max-height:250px}
             .message .file-preview.video{max-height:250px}
             .room-info .label{font-size:12px}
+            .viewer-overlay .close-btn{top:10px;right:10px;font-size:24px;padding:8px 14px}
+            .viewer-overlay .download-btn-top{top:10px;right:60px;padding:8px 12px;font-size:14px}
         }
         @media(max-width:480px){
             .login-container{padding:20px 16px}
@@ -213,12 +226,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             .messages-container{padding:10px 12px}
             .input-area{padding:6px 10px 12px}
             .input-wrapper{padding:2px 4px 2px 10px;border-radius:20px}
+            .viewer-overlay .close-btn{top:10px;right:10px;font-size:20px;padding:6px 12px}
+            .viewer-overlay .download-btn-top{top:10px;right:55px;padding:6px 10px;font-size:12px}
         }
         .messages-container{scrollbar-width:thin;scrollbar-color:#3a3a3a #1a1a1a}
         ::selection{background:#667eea;color:#fff}
     </style>
 </head>
 <body>
+<!-- Login Screen -->
 <div id="loginScreen" class="screen active">
     <div class="login-container">
         <span class="logo">👻</span>
@@ -230,6 +246,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div id="loginError" class="error-message"></div>
     </div>
 </div>
+
+<!-- Chat Screen -->
 <div id="chatScreen" class="screen">
     <div class="chat-container">
         <div class="chat-header">
@@ -247,7 +265,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
         <div class="input-area">
             <div class="input-wrapper">
-                <button id="fileBtn" class="file-btn" title="Đính kèm file">📎</button>
+                <button id="fileBtn" class="file-btn" title="Đính kèm file">➕</button>
                 <input type="text" id="messageInput" class="message-input" placeholder="Nhập tin nhắn..." autocomplete="off">
                 <button id="sendBtn" class="send-btn" title="Gửi">➤</button>
             </div>
@@ -259,6 +277,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
     </div>
 </div>
+
+<!-- Fullscreen Viewer -->
+<div id="viewerOverlay" class="viewer-overlay">
+    <button class="close-btn" onclick="closeViewer()">✕</button>
+    <button class="download-btn-top" onclick="downloadViewerFile()">⬇️ Tải xuống</button>
+    <div id="viewerContent"></div>
+    <div id="viewerFileName" class="file-name-display"></div>
+</div>
+
 <script>
 (function(){
 'use strict';
@@ -281,10 +308,14 @@ const typingIndicator=document.getElementById('typingIndicator');
 const uploadProgress=document.getElementById('uploadProgress');
 const progressFill=document.getElementById('progressFill');
 const progressText=document.getElementById('progressText');
+const viewerOverlay=document.getElementById('viewerOverlay');
+const viewerContent=document.getElementById('viewerContent');
+const viewerFileName=document.getElementById('viewerFileName');
 
 let ws=null,roomCode=null,username=null,isConnected=false,reconnectAttempts=0;
 const MAX_RECONNECT=5;
 let messageBuffer=[],typingTimeout=null,isTyping=false;
+let currentViewerUrl='',currentViewerName='';
 
 // ===== Utilities =====
 function formatFileSize(b){if(b===0)return'0 B';const k=1024,s=['B','KB','MB','GB'];const i=Math.floor(Math.log(b)/Math.log(k));return parseFloat((b/Math.pow(k,i)).toFixed(2))+' '+s[i];}
@@ -299,6 +330,47 @@ function setLoading(l){if(l){joinBtn.disabled=true;joinBtn.innerHTML='<span clas
 function scrollToBottom(){setTimeout(()=>messagesContainer.scrollTop=messagesContainer.scrollHeight,50);}
 function showTyping(s){s?typingIndicator.classList.add('show'):typingIndicator.classList.remove('show');}
 function updateProgress(p){if(p>=100){uploadProgress.classList.remove('show');progressFill.style.width='0%';progressText.textContent='0%';return;}uploadProgress.classList.add('show');progressFill.style.width=p+'%';progressText.textContent=p+'%';}
+
+// ===== Fullscreen Viewer =====
+window.openViewer=function(url,name,type){
+    currentViewerUrl=url;
+    currentViewerName=name;
+    viewerFileName.textContent=name;
+    if(type==='image'){
+        viewerContent.innerHTML='<img src="'+url+'" class="viewer-content image-viewer" alt="'+escapeHtml(name)+'">';
+    }else if(type==='video'){
+        viewerContent.innerHTML='<video class="viewer-content video-viewer" controls autoplay><source src="'+url+'"></video>';
+    }else{
+        viewerContent.innerHTML='<div style="color:#fff;font-size:24px;text-align:center;padding:40px">📄 '+escapeHtml(name)+'<br><br><button onclick="window.open(\\''+url+'\\',\\'_blank\\')" style="padding:12px 24px;background:#667eea;border:none;border-radius:8px;color:#fff;font-size:16px;cursor:pointer">Mở file</button></div>';
+    }
+    viewerOverlay.classList.add('active');
+    document.body.style.overflow='hidden';
+};
+
+window.closeViewer=function(){
+    viewerOverlay.classList.remove('active');
+    document.body.style.overflow='';
+    viewerContent.innerHTML='';
+    currentViewerUrl='';
+    currentViewerName='';
+};
+
+window.downloadViewerFile=function(){
+    if(currentViewerUrl){
+        const a=document.createElement('a');
+        a.href=currentViewerUrl;
+        a.download=currentViewerName||'file';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    }
+};
+
+// Đóng viewer bằng phím ESC
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeViewer();});
+
+// ===== Download File =====
+window.downloadFile=function(url,name){if(!url)return;const a=document.createElement('a');a.href=url;a.download=name||'file';document.body.appendChild(a);a.click();document.body.removeChild(a);};
 
 // ===== Render Message =====
 function renderMessage(msg){
@@ -316,27 +388,44 @@ const isImage=ft==='image';
 const isVideo=ft==='video';
 const isViewable=isImage||isVideo;
 let preview='';
-if(isImage&&msg.file_url)preview='<img src="'+msg.file_url+'" class="file-preview image" loading="lazy" onclick="window.open(\\''+msg.file_url+'\\',\\'_blank\\')">';
-else if(isVideo&&msg.file_url)preview='<video class="file-preview video" controls><source src="'+msg.file_url+'"></video>';
+if(isImage&&msg.file_url){
+preview='<img src="'+msg.file_url+'" class="file-preview image" onclick="openViewer(\\''+msg.file_url+'\\',\\''+escapeHtml(msg.file_name)+'\\',\\'image\\')" loading="lazy">';
+}else if(isVideo&&msg.file_url){
+preview='<video class="file-preview video" onclick="openViewer(\\''+msg.file_url+'\\',\\''+escapeHtml(msg.file_name)+'\\',\\'video\\')"><source src="'+msg.file_url+'"></video>';
+}
 
 let fileHtml='<div class="file-wrapper">'+preview;
 fileHtml+='<div class="file-info"><span class="file-icon">'+fi+'</span><span class="file-name">'+escapeHtml(msg.file_name)+'</span><span class="file-size">'+formatFileSize(msg.file_size||0)+'</span></div>';
 fileHtml+='<div class="file-actions">';
 if(isViewable&&msg.file_url){
-fileHtml+='<button class="view-btn" onclick="window.open(\\''+msg.file_url+'\\',\\'_blank\\')">👁️ Xem</button>';
+fileHtml+='<button class="btn" onclick="openViewer(\\''+msg.file_url+'\\',\\''+escapeHtml(msg.file_name)+'\\',\\''+ft+'\\')">👁️ Xem</button>';
 }
-fileHtml+='<button class="download-btn" onclick="downloadFile(\\''+msg.file_url+'\\',\\''+escapeHtml(msg.file_name)+'\\')">⬇️ Download</button>';
+fileHtml+='<button class="btn btn-download" onclick="downloadFile(\\''+msg.file_url+'\\',\\''+escapeHtml(msg.file_name)+'\\')">⬇️ Download</button>';
 fileHtml+='</div></div>';
 div.innerHTML=(!isSelf?'<div class="username">'+escapeHtml(msg.username)+'</div>':'')+fileHtml+'<span class="timestamp">'+(msg.timestamp||getTimestamp())+'</span>';
 }
 return div;
 }
 
-function appendMessage(msg){messagesList.appendChild(renderMessage(msg));scrollToBottom();}
-function loadHistory(msgs){messagesList.innerHTML='';if(msgs&&msgs.length>0)msgs.forEach(m=>appendMessage(m));else{const e=document.createElement('div');e.style.cssText='text-align:center;color:#5a5a5a;padding:40px 20px;font-size:16px;';e.textContent='👻 Chưa có tin nhắn nào. Hãy bắt đầu trò chuyện!';messagesList.appendChild(e);}scrollToBottom();}
+function appendMessage(msg){
+if(!msg)return;
+const el=renderMessage(msg);
+if(el)messagesList.appendChild(el);
+scrollToBottom();
+}
 
-// ===== Download File =====
-window.downloadFile=function(url,name){if(!url)return;const a=document.createElement('a');a.href=url;a.download=name||'file';document.body.appendChild(a);a.click();document.body.removeChild(a);};
+function loadHistory(msgs){
+messagesList.innerHTML='';
+if(msgs&&msgs.length>0){
+msgs.forEach(m=>appendMessage(m));
+}else{
+const e=document.createElement('div');
+e.style.cssText='text-align:center;color:#5a5a5a;padding:40px 20px;font-size:16px;';
+e.textContent='👻 Chưa có tin nhắn nào. Hãy bắt đầu trò chuyện!';
+messagesList.appendChild(e);
+}
+scrollToBottom();
+}
 
 // ===== WebSocket =====
 function connectWebSocket(){
@@ -580,7 +669,7 @@ async def get_file(room_key: str, filename: str):
     return FileResponse(file_path, media_type=content_type)
 
 # ===================================================
-# WebSocket Endpoint
+# WebSocket Endpoint - ĐÃ SỬA LỖI KẸT
 # ===================================================
 
 @app.websocket("/ws/{room_key}")
@@ -589,75 +678,98 @@ async def websocket_endpoint(websocket: WebSocket, room_key: str):
     
     room_key = room_key.strip()
     
-    print(f"[DEBUG] WebSocket room_key: '{room_key}'")
-    print(f"[DEBUG] ROOM_KEY: '{ROOM_KEY}'")
-    
     if room_key != ROOM_KEY:
-        print(f"[ERROR] Invalid room key: '{room_key}' != '{ROOM_KEY}'")
         await websocket.close(code=1008, reason="Invalid room key")
         return
     
     username = websocket.query_params.get("username", "Anonymous")
-    await websocket.accept()
-    CLIENTS.add(websocket)
+    
     try:
+        await websocket.accept()
+        CLIENTS.add(websocket)
+        
+        # Gửi lịch sử (giới hạn 100 tin nhắn)
         history_data = {
             "type": "history",
-            "data": MESSAGES.copy()
+            "data": MESSAGES[-MAX_HISTORY:] if MESSAGES else []
         }
         await websocket.send_text(json.dumps(history_data))
+        
+        # Thông báo tham gia
         join_msg = {
             "type": "system",
             "content": f"{username} đã tham gia phòng",
             "timestamp": get_timestamp()
         }
         MESSAGES.append(join_msg)
+        if len(MESSAGES) > MAX_HISTORY:
+            MESSAGES = MESSAGES[-MAX_HISTORY:]
         await broadcast(join_msg)
+        
+        # Vòng lặp nhận tin nhắn với timeout
         while True:
-            data = await websocket.receive_text()
             try:
-                message = json.loads(data)
-                msg_type = message.get("type")
-                if msg_type == "text":
-                    content = message.get("content", "").strip()
-                    if content:
-                        chat_msg = {
-                            "type": "text",
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
+                try:
+                    message = json.loads(data)
+                    msg_type = message.get("type")
+                    
+                    if msg_type == "text":
+                        content = message.get("content", "").strip()
+                        if content and len(content) > 0:
+                            chat_msg = {
+                                "type": "text",
+                                "username": username,
+                                "content": content,
+                                "timestamp": get_time_display()
+                            }
+                            MESSAGES.append(chat_msg)
+                            if len(MESSAGES) > MAX_HISTORY:
+                                MESSAGES = MESSAGES[-MAX_HISTORY:]
+                            await broadcast(chat_msg)
+                    elif msg_type == "file":
+                        file_url = message.get("file_url")
+                        file_name = message.get("file_name", "Unknown")
+                        file_size = message.get("file_size", 0)
+                        file_type = message.get("file_type", "other")
+                        if file_url:
+                            chat_msg = {
+                                "type": "file",
+                                "username": username,
+                                "file_url": file_url,
+                                "file_name": file_name,
+                                "file_size": file_size,
+                                "file_type": file_type,
+                                "timestamp": get_time_display()
+                            }
+                            MESSAGES.append(chat_msg)
+                            if len(MESSAGES) > MAX_HISTORY:
+                                MESSAGES = MESSAGES[-MAX_HISTORY:]
+                            await broadcast(chat_msg)
+                    elif msg_type == "typing":
+                        typing_msg = {
+                            "type": "typing",
                             "username": username,
-                            "content": content,
-                            "timestamp": get_time_display()
+                            "is_typing": message.get("is_typing", False)
                         }
-                        MESSAGES.append(chat_msg)
-                        await broadcast(chat_msg)
-                elif msg_type == "file":
-                    file_url = message.get("file_url")
-                    file_name = message.get("file_name", "Unknown")
-                    file_size = message.get("file_size", 0)
-                    file_type = message.get("file_type", "other")
-                    if file_url:
-                        chat_msg = {
-                            "type": "file",
-                            "username": username,
-                            "file_url": file_url,
-                            "file_name": file_name,
-                            "file_size": file_size,
-                            "file_type": file_type,
-                            "timestamp": get_time_display()
-                        }
-                        MESSAGES.append(chat_msg)
-                        await broadcast(chat_msg)
-                elif msg_type == "typing":
-                    typing_msg = {
-                        "type": "typing",
-                        "username": username,
-                        "is_typing": message.get("is_typing", False)
-                    }
-                    await broadcast_to_others(websocket, typing_msg)
-            except json.JSONDecodeError:
-                pass
+                        await broadcast_to_others(websocket, typing_msg)
+                except json.JSONDecodeError:
+                    pass
+                except Exception as e:
+                    print(f"Error processing message: {e}")
+            except asyncio.TimeoutError:
+                continue
+            except WebSocketDisconnect:
+                break
             except Exception as e:
-                print(f"Error processing message: {e}")
+                print(f"WebSocket receive error: {e}")
+                break
+                
     except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+    finally:
         CLIENTS.discard(websocket)
         leave_msg = {
             "type": "system",
@@ -665,10 +777,9 @@ async def websocket_endpoint(websocket: WebSocket, room_key: str):
             "timestamp": get_timestamp()
         }
         MESSAGES.append(leave_msg)
+        if len(MESSAGES) > MAX_HISTORY:
+            MESSAGES = MESSAGES[-MAX_HISTORY:]
         await broadcast(leave_msg)
-    except Exception as e:
-        CLIENTS.discard(websocket)
-        print(f"WebSocket error: {e}")
 
 # ===================================================
 # Broadcasting
