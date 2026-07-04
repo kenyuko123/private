@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 GhostChat - Chat ứng dụng realtime với WebSocket
-Sử dụng Gofile API để upload file
+Upload file trực tiếp lên Catbox.moe từ trình duyệt
+Tất cả trong 1 file Python duy nhất
 """
 
 import asyncio
@@ -15,27 +16,14 @@ import signal
 import socket
 import string
 import sys
-import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import List, Set
-import mimetypes
-import aiohttp
-import io
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi.responses import JSONResponse, HTMLResponse
 import uvicorn
-
-# ===================================================
-# Cấu hình
-# ===================================================
-DEFAULT_PORT = 8000
-ROOM_CODE_LENGTH = 16
-MAX_HISTORY = 100
-GOFILE_TOKEN = "ClvhLHwRp4U06n5vjVFRimmoIc8FLK6g"
-TEMP_DIR = Path("temp")
 
 # ===================================================
 # Tắt log
@@ -44,7 +32,13 @@ logging.getLogger("uvicorn").setLevel(logging.CRITICAL)
 logging.getLogger("uvicorn.access").setLevel(logging.CRITICAL)
 logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
 logging.getLogger("fastapi").setLevel(logging.CRITICAL)
-logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+
+# ===================================================
+# Cấu hình
+# ===================================================
+DEFAULT_PORT = 8000
+ROOM_CODE_LENGTH = 16
+MAX_HISTORY = 100
 
 # ===================================================
 # Global State
@@ -56,81 +50,12 @@ def generate_room_code() -> str:
 ROOM_KEY = generate_room_code()
 MESSAGES: List[dict] = []
 CLIENTS: Set[WebSocket] = set()
-UPLOADED_FILES: List[dict] = []  # Lưu thông tin file đã upload lên Gofile
 SHUTDOWN_DONE = False
-
-try:
-    TEMP_DIR.mkdir(parents=True, exist_ok=True)
-except Exception:
-    pass
 
 app = FastAPI(title="GhostChat", version="1.0.0")
 
 # ===================================================
-# Hàm upload lên Gofile
-# ===================================================
-async def upload_to_gofile(file_data: bytes, filename: str) -> dict:
-    """Upload file lên Gofile và trả về thông tin"""
-    try:
-        # Bước 1: Lấy server
-        async with aiohttp.ClientSession() as session:
-            async with session.get("https://api.gofile.io/servers") as resp:
-                servers = await resp.json()
-                if servers["status"] != "ok":
-                    raise Exception("Không lấy được server Gofile")
-                server = servers["data"]["servers"][0]
-            
-            # Bước 2: Upload file
-            url = f"https://{server}.gofile.io/uploadFile"
-            
-            # Tạo form data
-            data = aiohttp.FormData()
-            data.add_field('token', GOFILE_TOKEN)
-            data.add_field('file', file_data, filename=filename)
-            
-            async with session.post(url, data=data) as resp:
-                result = await resp.json()
-                if result["status"] != "ok":
-                    raise Exception(f"Upload thất bại: {result.get('message', 'Unknown error')}")
-                
-                file_info = result["data"]
-                return {
-                    "file_id": file_info["fileId"],
-                    "file_url": file_info["downloadPage"],
-                    "direct_link": file_info.get("link", ""),
-                    "file_name": filename,
-                    "file_size": len(file_data)
-                }
-    except Exception as e:
-        print(f"[ERROR] Upload to Gofile: {e}")
-        raise
-
-async def delete_from_gofile(file_id: str) -> bool:
-    """Xóa file trên Gofile"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = f"https://api.gofile.io/deleteFile"
-            data = {"fileId": file_id, "token": GOFILE_TOKEN}
-            async with session.post(url, json=data) as resp:
-                result = await resp.json()
-                return result.get("status") == "ok"
-    except Exception as e:
-        print(f"[ERROR] Delete from Gofile: {e}")
-        return False
-
-async def cleanup_all_files():
-    """Xóa tất cả file đã upload lên Gofile"""
-    global UPLOADED_FILES
-    print(f"\n🗑️ Đang xóa {len(UPLOADED_FILES)} file trên Gofile...")
-    deleted = 0
-    for file_info in UPLOADED_FILES:
-        if await delete_from_gofile(file_info["file_id"]):
-            deleted += 1
-    print(f"✅ Đã xóa {deleted}/{len(UPLOADED_FILES)} file")
-    UPLOADED_FILES = []
-
-# ===================================================
-# HTML Template - ĐÃ SỬA VỚI GOFILE
+# HTML Template - Tất cả trong 1
 # ===================================================
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="vi">
@@ -228,8 +153,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .file-input{display:none}
         .loading-spinner{display:inline-block;width:20px;height:20px;border:3px solid rgba(102,126,234,.2);border-top-color:#667eea;border-radius:50%;animation:spin .6s linear infinite}
         @keyframes spin{to{transform:rotate(360deg)}}
-        .cleanup-status{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.8);padding:10px 20px;border-radius:10px;color:#ff6b6b;font-size:14px;z-index:999;display:none}
-        .cleanup-status.show{display:block;animation:fadeIn .3s ease}
         @media(max-width:768px){.login-container{padding:30px 20px}.logo{font-size:60px}.app-title{font-size:28px}.message{max-width:85%;padding:6px 12px}.message .content{font-size:14px}.chat-header{padding:10px 16px}.room-code{font-size:12px;padding:3px 10px}.messages-container{padding:12px 16px}.input-area{padding:8px 12px 14px}.input-wrapper{padding:3px 5px 3px 12px}.message .file-preview.image{max-height:250px}.message .file-preview.video{max-height:250px}.room-info .label{font-size:12px}.viewer-overlay .close-btn{top:10px;right:10px;font-size:24px;padding:8px 14px}.viewer-overlay .download-btn-top{top:10px;right:60px;padding:8px 12px;font-size:14px}}
         @media(max-width:480px){.login-container{padding:20px 16px}.logo{font-size:48px}.app-title{font-size:22px}.room-input{font-size:16px;padding:14px}.message{max-width:92%;padding:6px 10px;font-size:13px}.message .content{font-size:13px}.message .file-preview.image{max-height:200px}.message .file-preview.video{max-height:200px}.message .file-info{font-size:12px}.file-btn{width:34px;height:34px;font-size:20px}.send-btn{width:34px;height:34px;font-size:16px}.message-input{font-size:14px}.room-code{font-size:11px;padding:2px 8px}.room-info .label{font-size:11px}.logout-btn{width:32px;height:32px;font-size:18px}.chat-header{padding:8px 12px;min-height:50px}.messages-container{padding:10px 12px}.input-area{padding:6px 10px 12px}.input-wrapper{padding:2px 4px 2px 10px;border-radius:20px}.viewer-overlay .close-btn{top:10px;right:10px;font-size:20px;padding:6px 12px}.viewer-overlay .download-btn-top{top:10px;right:55px;padding:6px 10px;font-size:12px}}
         .messages-container{scrollbar-width:thin;scrollbar-color:#3a3a3a #1a1a1a}
@@ -286,8 +209,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <div id="viewerFileName" class="file-name-display"></div>
 </div>
 
-<div id="cleanupStatus" class="cleanup-status">🗑️ Đã xóa tất cả file</div>
-
 <script>
 (function(){
 'use strict';
@@ -312,7 +233,6 @@ const progressText=document.getElementById('progressText');
 const viewerOverlay=document.getElementById('viewerOverlay');
 const viewerContent=document.getElementById('viewerContent');
 const viewerFileName=document.getElementById('viewerFileName');
-const cleanupStatus=document.getElementById('cleanupStatus');
 
 let ws=null,roomCode=null,username=null,isConnected=false,reconnectAttempts=0;
 const MAX_RECONNECT=5;
@@ -368,6 +288,32 @@ window.downloadFile=function(url,name){
     window.open(url, '_blank');
 };
 
+// ===== UPLOAD FILE LÊN CATBOX.MOE TỪ TRÌNH DUYỆT =====
+async function uploadToCatbox(file) {
+    const formData = new FormData();
+    formData.append('reqtype', 'fileupload');
+    formData.append('fileToUpload', file);
+    
+    const response = await fetch('https://catbox.moe/user/api.php', {
+        method: 'POST',
+        body: formData
+    });
+    
+    if (!response.ok) {
+        throw new Error('Upload thất bại: ' + response.status);
+    }
+    
+    const url = await response.text();
+    const trimmedUrl = url.trim();
+    
+    if (!trimmedUrl.startsWith('http')) {
+        throw new Error('Catbox trả về lỗi: ' + trimmedUrl);
+    }
+    
+    return trimmedUrl;
+}
+
+// ===== RENDER MESSAGE =====
 function renderMessage(msg){
 const div=document.createElement('div');
 if(msg.type==='system'){div.className='message system';div.textContent=msg.content;return div;}
@@ -422,6 +368,7 @@ messagesList.appendChild(e);
 scrollToBottom();
 }
 
+// ===== WEBSOCKET =====
 function connectWebSocket(){
 if(ws&&ws.readyState===WebSocket.OPEN)return;
 const protocol=window.location.protocol==='https:'?'wss:':'ws:';
@@ -437,103 +384,31 @@ function sendText(c){if(!c||!c.trim())return;sendMessage('text',{content:c.trim(
 function sendFile(url,name,size){const ft=getFileType(name);sendMessage('file',{file_url:url,file_name:name,file_size:size,file_type:ft});}
 function sendTyping(t){sendMessage('typing',{is_typing:t});}
 
+// ===== UPLOAD FILES - GỌI CATBOX =====
 async function uploadFiles(files){
     if(!files||files.length===0)return;
     
-    const formData=new FormData();
-    for(let f of files){
-        formData.append('file',f);
-    }
-    
-    updateProgress(0);
-    
-    try{
-        const xhr=new XMLHttpRequest();
-        const uploadPromise=new Promise((resolve,reject)=>{
-            xhr.open('POST','/upload/'+roomCode,true);
-            
-            xhr.upload.onprogress=(e)=>{
-                if(e.lengthComputable){
-                    const percent=Math.round((e.loaded/e.total)*100);
-                    updateProgress(percent);
-                }
-            };
-            
-            xhr.onload=()=>{
-                if(xhr.status===200){
-                    try{
-                        const response=JSON.parse(xhr.responseText);
-                        resolve(response);
-                    }catch(err){
-                        reject(new Error('Invalid response'));
-                    }
-                }else{
-                    try{
-                        const error=JSON.parse(xhr.responseText);
-                        reject(new Error(error.detail||'Upload failed'));
-                    }catch(err){
-                        reject(new Error('Upload failed with status: '+xhr.status));
-                    }
-                }
-            };
-            
-            xhr.onerror=()=>{
-                reject(new Error('Network error during upload'));
-            };
-            
-            xhr.send(formData);
-        });
-        
-        const result=await uploadPromise;
-        updateProgress(100);
-        setTimeout(()=>updateProgress(0),1000);
-        
-        if(result.uploaded&&result.uploaded.length>0){
-            result.uploaded.forEach(file=>{
-                sendFile(file.file_url,file.original_name,file.file_size);
-            });
-        }
-        
-        if(result.errors&&result.errors.length>0){
-            result.errors.forEach(err=>{
-                console.warn('Upload error:',err);
-                showError('Upload lỗi: '+err.error);
-            });
-        }
-    }catch(err){
-        console.error('Upload error:',err);
+    for(let file of files){
         updateProgress(0);
-        showError('Upload thất bại: '+err.message);
+        try{
+            // Upload lên Catbox.moe
+            const link = await uploadToCatbox(file);
+            
+            updateProgress(100);
+            setTimeout(()=>updateProgress(0),500);
+            
+            // Gửi link qua WebSocket
+            sendFile(link, file.name, file.size);
+            
+        }catch(err){
+            console.error('Upload error:',err);
+            updateProgress(0);
+            showError('Upload thất bại: '+err.message);
+        }
     }
 }
 
-// ===== CLEANUP - Xóa tất cả file =====
-async function cleanupFiles(){
-    try{
-        const response=await fetch('/cleanup',{method:'POST'});
-        const data=await response.json();
-        if(data.success){
-            cleanupStatus.textContent='🗑️ Đã xóa '+data.deleted+' file';
-            cleanupStatus.classList.add('show');
-            setTimeout(()=>cleanupStatus.classList.remove('show'),3000);
-        }
-    }catch(err){
-        console.error('Cleanup error:',err);
-    }
-}
-
-// ===== Bắt sự kiện Enter để xóa file =====
-document.addEventListener('keydown', function(e){
-    if(e.key==='Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey){
-        // Kiểm tra xem có đang ở chat không
-        if(chatScreen.classList.contains('active')){
-            e.preventDefault();
-            cleanupFiles();
-        }
-    }
-});
-
-// ===== Join Room =====
+// ===== JOIN ROOM =====
 async function joinRoom(){
 const code=roomInput.value.trim();
 if(!code){showError('Vui lòng nhập mã phòng');return;}
@@ -554,6 +429,7 @@ function leaveRoom(){
 if(ws){try{ws.close(1000,'User left');}catch(e){}}ws=null;isConnected=false;messageBuffer=[];messagesList.innerHTML='';messageInput.value='';updateProgress(0);chatScreen.classList.remove('active');loginScreen.classList.add('active');roomInput.value='';roomInput.focus();roomCode=null;username=null;reconnectAttempts=0;sendBtn.disabled=true;messageInput.disabled=true;
 }
 
+// ===== EVENT LISTENERS =====
 joinBtn.onclick=joinRoom;
 roomInput.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();joinRoom();}};
 sendBtn.onclick=()=>sendText(messageInput.value);
@@ -568,73 +444,11 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&chatScree
 window.onbeforeunload=()=>{if(ws){try{ws.close(1000,'Page unload');}catch(e){}}};
 
 console.log('👻 GhostChat initialized');
-console.log('💡 Nhấn Enter để xóa tất cả file đã upload');
+console.log('📤 Upload file lên Catbox.moe (miễn phí, không cần đăng ký)');
 })();
 </script>
 </body>
 </html>"""
-
-# ===================================================
-# Utility Functions
-# ===================================================
-
-def get_timestamp() -> str:
-    return datetime.now().isoformat()
-
-def get_time_display() -> str:
-    return datetime.now().strftime("%H:%M")
-
-def sanitize_filename(filename: str) -> str:
-    basename = os.path.basename(filename)
-    return re.sub(r'[^a-zA-Z0-9._-]', '_', basename)
-
-def format_file_size(size: int) -> str:
-    if size == 0:
-        return "0 B"
-    k = 1024
-    sizes = ["B", "KB", "MB", "GB"]
-    i = int(min(len(sizes) - 1, (len(str(size)) - 1) // 3))
-    value = size / (k ** i)
-    return f"{value:.2f} {sizes[i]}"
-
-def get_file_extension(filename: str) -> str:
-    return os.path.splitext(filename)[1].lower()
-
-def get_file_type(filename: str) -> str:
-    ext = get_file_extension(filename)
-    image_ext = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff'}
-    video_ext = {'.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m4v'}
-    audio_ext = {'.mp3', '.wav', '.ogg', '.aac', '.flac', '.m4a'}
-    doc_ext = {'.pdf', '.doc', '.docx', '.txt', '.rtf', '.odt', '.xls', '.xlsx', '.ppt', '.pptx'}
-    code_ext = {'.js', '.py', '.java', '.cpp', '.c', '.html', '.css', '.php', '.rb', '.go', '.rs', '.swift', '.kt', '.ts'}
-    archive_ext = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}
-
-    if ext in image_ext:
-        return "image"
-    elif ext in video_ext:
-        return "video"
-    elif ext in audio_ext:
-        return "audio"
-    elif ext in doc_ext:
-        return "document"
-    elif ext in code_ext:
-        return "code"
-    elif ext in archive_ext:
-        return "archive"
-    elif ext == '.apk':
-        return "apk"
-    else:
-        return "other"
-
-def find_free_port(start_port: int = DEFAULT_PORT, max_attempts: int = 10) -> int:
-    for port in range(start_port, start_port + max_attempts):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("0.0.0.0", port))
-                return port
-        except OSError:
-            continue
-    raise RuntimeError(f"Không tìm thấy cổng trống")
 
 # ===================================================
 # API Endpoints
@@ -650,8 +464,7 @@ async def health_check():
         "status": "healthy",
         "room_key": ROOM_KEY,
         "active_clients": len(CLIENTS),
-        "messages_count": len(MESSAGES),
-        "uploaded_files": len(UPLOADED_FILES)
+        "messages_count": len(MESSAGES)
     }
 
 @app.post("/check_room")
@@ -670,81 +483,6 @@ async def check_room(request: Request):
     except Exception as e:
         print(f"[ERROR] {e}")
         return JSONResponse({"success": False, "message": "Invalid Request"})
-
-@app.post("/upload/{room_key}")
-async def upload_file(room_key: str, files: List[UploadFile] = File(...)):
-    global UPLOADED_FILES
-    
-    print(f"[UPLOAD] Room key: {room_key}")
-    print(f"[UPLOAD] ROOM_KEY: {ROOM_KEY}")
-    print(f"[UPLOAD] Files count: {len(files)}")
-    
-    if room_key != ROOM_KEY:
-        print(f"[UPLOAD] Invalid room key!")
-        raise HTTPException(status_code=404, detail="Room not found")
-    
-    if not files:
-        print(f"[UPLOAD] No files!")
-        raise HTTPException(status_code=400, detail="No files provided")
-    
-    uploaded_files = []
-    errors = []
-    
-    for file in files:
-        try:
-            print(f"[UPLOAD] Processing file: {file.filename}")
-            original_name = sanitize_filename(file.filename)
-            if not original_name:
-                continue
-            
-            content = await file.read()
-            file_size = len(content)
-            print(f"[UPLOAD] File size: {file_size} bytes")
-            
-            # Upload lên Gofile
-            result = await upload_to_gofile(content, original_name)
-            
-            uploaded_files.append({
-                "file_url": result["direct_link"] or result["file_url"],
-                "original_name": original_name,
-                "file_size": file_size,
-                "file_id": result["file_id"]
-            })
-            
-            # Lưu để cleanup sau
-            UPLOADED_FILES.append({
-                "file_id": result["file_id"],
-                "file_name": original_name
-            })
-            
-        except Exception as e:
-            print(f"[UPLOAD] Error: {e}")
-            errors.append({
-                "filename": file.filename,
-                "error": str(e)
-            })
-    
-    if errors and not uploaded_files:
-        raise HTTPException(status_code=400, detail=errors[0]["error"])
-    
-    print(f"[UPLOAD] Success: {len(uploaded_files)} files, Errors: {len(errors)}")
-    return JSONResponse({
-        "uploaded": uploaded_files,
-        "errors": errors if errors else None
-    })
-
-@app.post("/cleanup")
-async def cleanup_files():
-    """Xóa tất cả file đã upload trên Gofile"""
-    global UPLOADED_FILES
-    deleted = 0
-    for file_info in UPLOADED_FILES:
-        if await delete_from_gofile(file_info["file_id"]):
-            deleted += 1
-    count = len(UPLOADED_FILES)
-    UPLOADED_FILES = []
-    print(f"[CLEANUP] Đã xóa {deleted}/{count} file trên Gofile")
-    return JSONResponse({"success": True, "deleted": deleted, "total": count})
 
 # ===================================================
 # WebSocket Endpoint
@@ -775,7 +513,7 @@ async def websocket_endpoint(websocket: WebSocket, room_key: str):
         join_msg = {
             "type": "system",
             "content": f"{username} đã tham gia phòng",
-            "timestamp": get_timestamp()
+            "timestamp": datetime.now().isoformat()
         }
         MESSAGES.append(join_msg)
         if len(MESSAGES) > MAX_HISTORY:
@@ -796,7 +534,7 @@ async def websocket_endpoint(websocket: WebSocket, room_key: str):
                                 "type": "text",
                                 "username": username,
                                 "content": content,
-                                "timestamp": get_time_display()
+                                "timestamp": datetime.now().strftime("%H:%M")
                             }
                             MESSAGES.append(chat_msg)
                             if len(MESSAGES) > MAX_HISTORY:
@@ -815,7 +553,7 @@ async def websocket_endpoint(websocket: WebSocket, room_key: str):
                                 "file_name": file_name,
                                 "file_size": file_size,
                                 "file_type": file_type,
-                                "timestamp": get_time_display()
+                                "timestamp": datetime.now().strftime("%H:%M")
                             }
                             MESSAGES.append(chat_msg)
                             if len(MESSAGES) > MAX_HISTORY:
@@ -849,7 +587,7 @@ async def websocket_endpoint(websocket: WebSocket, room_key: str):
         leave_msg = {
             "type": "system",
             "content": f"{username} đã rời phòng",
-            "timestamp": get_timestamp()
+            "timestamp": datetime.now().isoformat()
         }
         MESSAGES.append(leave_msg)
         if len(MESSAGES) > MAX_HISTORY:
@@ -925,7 +663,6 @@ async def shutdown_handler() -> None:
     
     print("\n🛑 Đang tắt GhostChat...")
     
-    # Đóng WebSocket
     if CLIENTS:
         for client in CLIENTS:
             try:
@@ -934,15 +671,7 @@ async def shutdown_handler() -> None:
                 pass
         CLIENTS.clear()
     
-    # Xóa file trên Gofile
-    await cleanup_all_files()
-    
-    # Xóa thư mục temp
-    if TEMP_DIR.exists():
-        try:
-            shutil.rmtree(TEMP_DIR)
-        except Exception:
-            pass
+    MESSAGES.clear()
     
     print("👋 GhostChat đã tắt!")
     sys.exit(0)
@@ -962,8 +691,8 @@ if __name__ == "__main__":
     print(f"Server running on http://localhost:{port}")
     print(f"Room Key: {ROOM_KEY}")
     print("="*50)
-    print("💡 Nhấn Enter để xóa tất cả file đã upload")
-    print("💡 Ctrl+C để tắt server và xóa file")
+    print("📤 File được upload lên Catbox.moe (miễn phí, không cần đăng ký)")
+    print("💡 Ctrl+C để tắt server")
     print("="*50)
     
     # Thiết lập signal handler
