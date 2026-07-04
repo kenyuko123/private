@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GhostChat - Chat ứng dụng realtime với WebSocket
-Chạy trên Replit, PythonAnywhere, hoặc local
+Chạy trên Linux, Replit, Termux, Windows
 """
 
 import asyncio
@@ -64,7 +64,7 @@ except Exception:
 app = FastAPI(title="GhostChat", version="1.0.0")
 
 # ===================================================
-# HTML Template (Rút gọn để vừa)
+# HTML Template
 # ===================================================
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="vi">
@@ -247,7 +247,6 @@ setLoading(true);
 try{
 const res=await fetch('/check_room',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room_key:code})});
 const data=await res.json();
-console.log('Join response:',data);
 if(data.success){
 roomCode=code;username=generateUsername();roomCodeDisplay.textContent=code;
 loginScreen.classList.remove('active');chatScreen.classList.add('active');
@@ -340,7 +339,7 @@ def find_free_port(start_port: int = DEFAULT_PORT, max_attempts: int = 10) -> in
     raise RuntimeError(f"Không tìm thấy cổng trống")
 
 # ===================================================
-# API Endpoints
+# API Endpoints - ĐÃ SỬA LỖI SO SÁNH
 # ===================================================
 
 @app.get("/", response_class=HTMLResponse)
@@ -360,9 +359,12 @@ async def health_check():
 async def check_room(request: Request):
     try:
         data = await request.json()
+        # QUAN TRỌNG: .strip() để xóa khoảng trắng, .upper() để chuyển hoa
         code = data.get("room_key", "").strip().upper()
-        print(f"[DEBUG] Received room_key: {code}")
-        print(f"[DEBUG] ROOM_KEY: {ROOM_KEY}")
+        
+        # Log để debug
+        print(f"[DEBUG] Received: '{code}'")
+        print(f"[DEBUG] ROOM_KEY: '{ROOM_KEY}'")
         print(f"[DEBUG] Match: {code == ROOM_KEY}")
         
         if code == ROOM_KEY:
@@ -370,7 +372,7 @@ async def check_room(request: Request):
         else:
             return JSONResponse({"success": False, "message": "Invalid Room Key"})
     except Exception as e:
-        print(f"[ERROR] Check room error: {e}")
+        print(f"[ERROR] {e}")
         return JSONResponse({"success": False, "message": "Invalid Request"})
 
 @app.post("/upload/{room_key}")
@@ -439,17 +441,21 @@ async def get_file(room_key: str, filename: str):
     return FileResponse(file_path, media_type=content_type)
 
 # ===================================================
-# WebSocket Endpoint
+# WebSocket Endpoint - ĐÃ SỬA LỖI SO SÁNH
 # ===================================================
 
 @app.websocket("/ws/{room_key}")
 async def websocket_endpoint(websocket: WebSocket, room_key: str):
     global MESSAGES, CLIENTS
-    print(f"[DEBUG] WebSocket room_key: {room_key}")
-    print(f"[DEBUG] ROOM_KEY: {ROOM_KEY}")
+    
+    # QUAN TRỌNG: .strip() để xóa khoảng trắng
+    room_key = room_key.strip()
+    
+    print(f"[DEBUG] WebSocket room_key: '{room_key}'")
+    print(f"[DEBUG] ROOM_KEY: '{ROOM_KEY}'")
     
     if room_key != ROOM_KEY:
-        print(f"[ERROR] Invalid room key: {room_key} != {ROOM_KEY}")
+        print(f"[ERROR] Invalid room key: '{room_key}' != '{ROOM_KEY}'")
         await websocket.close(code=1008, reason="Invalid room key")
         return
     
@@ -585,7 +591,7 @@ async def cleanup() -> None:
             pass
 
 # ===================================================
-# Main - Phiên bản cho Replit
+# Main
 # ===================================================
 
 if __name__ == "__main__":
@@ -600,5 +606,4 @@ if __name__ == "__main__":
     print(f"Room Key: {ROOM_KEY}")
     print("="*50)
     
-    # Chạy với log_level="critical" để ẩn log
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="critical", access_log=False)
