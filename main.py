@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GhostChat - Chat ứng dụng realtime với WebSocket
-Hỗ trợ upload file, xem ảnh/video full màn hình, download file
+Hỗ trợ upload tất cả định dạng file, xem ảnh/video full màn hình, download file
 """
 
 import asyncio
@@ -39,7 +39,7 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 # Cấu hình
 # ===================================================
 DEFAULT_PORT = 8000
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
 ROOM_CODE_LENGTH = 16
 TEMP_DIR = Path("temp")
 MAX_HISTORY = 100
@@ -65,7 +65,7 @@ except Exception:
 app = FastAPI(title="GhostChat", version="1.0.0")
 
 # ===================================================
-# HTML Template - Responsive cho Mobile & PC
+# HTML Template - ĐÃ SỬA LỖI UPLOAD
 # ===================================================
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="vi">
@@ -78,11 +78,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         *{margin:0;padding:0;box-sizing:border-box}
         body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,sans-serif;background:#0a0a0a;color:#e4e6eb;height:100vh;overflow:hidden}
         
-        /* ===== SCREENS ===== */
         .screen{display:none;width:100%;height:100vh;position:fixed;top:0;left:0;background:#0a0a0a;z-index:1}
         .screen.active{display:flex;justify-content:center;align-items:center}
         
-        /* ===== LOGIN ===== */
         .login-container{max-width:420px;width:90%;padding:40px 30px;background:#1a1a1a;border-radius:20px;text-align:center;animation:fadeIn .5s ease}
         @keyframes fadeIn{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
         .logo{font-size:72px;display:block;margin-bottom:10px;animation:float 3s ease-in-out infinite}
@@ -97,7 +95,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .error-message.show{display:block;animation:shake .4s ease}
         @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-10px)}75%{transform:translateX(10px)}}
         
-        /* ===== CHAT ===== */
         .chat-container{width:100%;height:100vh;max-width:900px;margin:0 auto;display:flex;flex-direction:column;background:#0f0f0f}
         .chat-header{display:flex;justify-content:space-between;align-items:center;padding:12px 20px;background:#1a1a1a;border-bottom:1px solid #2a2a2a;flex-shrink:0;min-height:60px}
         .room-info{display:flex;align-items:center;gap:8px;font-size:14px}
@@ -107,7 +104,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .logout-btn{width:36px;height:36px;background:#2a2a2a;border:none;border-radius:50%;color:#8a8a8a;font-size:20px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center}
         .logout-btn:hover{background:#3a2a2a;color:#ff6b6b;transform:rotate(90deg)}
         
-        /* ===== MESSAGES ===== */
         .messages-container{flex:1;overflow-y:auto;padding:16px 20px;background:#0f0f0f;scroll-behavior:smooth}
         .messages-container::-webkit-scrollbar{width:6px}
         .messages-container::-webkit-scrollbar-track{background:#1a1a1a}
@@ -115,7 +111,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .messages-container::-webkit-scrollbar-thumb:hover{background:#4a4a4a}
         .messages-list{display:flex;flex-direction:column;gap:6px;min-height:100%}
         
-        /* ===== MESSAGE BUBBLES ===== */
         .message{max-width:80%;padding:8px 14px;border-radius:18px;animation:slideIn .3s ease;position:relative;word-wrap:break-word}
         @keyframes slideIn{from{opacity:0;transform:translateY(10px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
         .message.self{align-self:flex-end;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border-bottom-right-radius:4px}
@@ -126,7 +121,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .message .content{font-size:15px;line-height:1.4;word-break:break-word}
         .message .timestamp{font-size:10px;opacity:.5;margin-top:3px;text-align:right;display:block}
         
-        /* ===== FILE MESSAGE ===== */
         .message .file-wrapper{background:rgba(0,0,0,.2);border-radius:12px;padding:10px;margin-top:2px;position:relative}
         .message.self .file-wrapper{background:rgba(0,0,0,.25)}
         .message .file-preview{max-width:100%;border-radius:8px;display:block;margin-bottom:6px;cursor:pointer}
@@ -137,7 +131,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .message .file-name{font-weight:500;flex:1;word-break:break-all;font-size:13px}
         .message .file-size{opacity:.6;font-size:11px;white-space:nowrap}
         
-        /* ===== FILE ACTIONS ===== */
         .file-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}
         .file-actions .btn{background:rgba(255,255,255,.1);border:none;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s;display:inline-flex;align-items:center;gap:4px;color:#e4e6eb}
         .file-actions .btn:hover{background:rgba(255,255,255,.2)}
@@ -146,7 +139,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .file-actions .btn-download{color:#667eea}
         .file-actions .btn-download:hover{background:rgba(102,126,234,.2)}
         
-        /* ===== FULLSCREEN VIEWER ===== */
         .viewer-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.95);z-index:9999;justify-content:center;align-items:center;flex-direction:column}
         .viewer-overlay.active{display:flex}
         .viewer-overlay .close-btn{position:absolute;top:20px;right:20px;background:rgba(255,255,255,.1);border:none;color:#fff;font-size:30px;cursor:pointer;padding:10px 18px;border-radius:50%;transition:all .3s;z-index:10000}
@@ -158,12 +150,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .viewer-overlay .viewer-content.video-viewer{max-width:95%;max-height:90%;width:auto}
         .viewer-overlay .file-name-display{position:absolute;bottom:30px;color:#8a8a8a;font-size:14px;text-align:center;max-width:80%;word-break:break-all}
         
-        /* ===== TYPING ===== */
         .typing-indicator{display:none;padding:6px 16px;color:#8a8a8a;font-size:13px;font-style:italic}
         .typing-indicator.show{display:block;animation:pulse 1.5s ease-in-out infinite}
         @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
         
-        /* ===== INPUT ===== */
         .input-area{flex-shrink:0;padding:10px 16px 16px;background:#1a1a1a;border-top:1px solid #2a2a2a}
         .input-wrapper{display:flex;align-items:center;gap:8px;background:#2a2a2a;border-radius:25px;padding:4px 6px 4px 14px;border:2px solid #3a3a3a;transition:all .3s}
         .input-wrapper:focus-within{border-color:#667eea;box-shadow:0 0 20px rgba(102,126,234,.1)}
@@ -176,7 +166,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .send-btn:active{transform:scale(.95)}
         .send-btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
         
-        /* ===== UPLOAD PROGRESS ===== */
         .upload-progress{display:none;margin-top:6px;padding:6px 12px;background:#2a2a2a;border-radius:8px;align-items:center;gap:10px}
         .upload-progress.show{display:flex}
         .progress-bar{flex:1;height:4px;background:#3a3a3a;border-radius:2px;overflow:hidden}
@@ -184,11 +173,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .progress-text{color:#8a8a8a;font-size:12px;min-width:36px;text-align:right}
         .file-input{display:none}
         
-        /* ===== LOADING ===== */
         .loading-spinner{display:inline-block;width:20px;height:20px;border:3px solid rgba(102,126,234,.2);border-top-color:#667eea;border-radius:50%;animation:spin .6s linear infinite}
         @keyframes spin{to{transform:rotate(360deg)}}
         
-        /* ===== RESPONSIVE ===== */
         @media(max-width:768px){
             .login-container{padding:30px 20px}
             .logo{font-size:60px}
@@ -234,7 +221,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </style>
 </head>
 <body>
-<!-- Login Screen -->
 <div id="loginScreen" class="screen active">
     <div class="login-container">
         <span class="logo">👻</span>
@@ -247,7 +233,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 </div>
 
-<!-- Chat Screen -->
 <div id="chatScreen" class="screen">
     <div class="chat-container">
         <div class="chat-header">
@@ -278,7 +263,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 </div>
 
-<!-- Fullscreen Viewer -->
 <div id="viewerOverlay" class="viewer-overlay">
     <button class="close-btn" onclick="closeViewer()">✕</button>
     <button class="download-btn-top" onclick="downloadViewerFile()">⬇️ Tải xuống</button>
@@ -366,7 +350,6 @@ window.downloadViewerFile=function(){
     }
 };
 
-// Đóng viewer bằng phím ESC
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeViewer();});
 
 // ===== Download File =====
@@ -443,27 +426,76 @@ function sendText(c){if(!c||!c.trim())return;sendMessage('text',{content:c.trim(
 function sendFile(url,name,size){const ft=getFileType(name);sendMessage('file',{file_url:url,file_name:name,file_size:size,file_type:ft});}
 function sendTyping(t){sendMessage('typing',{is_typing:t});}
 
-// ===== Upload Files =====
+// ===== UPLOAD FILES - ĐÃ SỬA LỖI =====
 async function uploadFiles(files){
-if(!files||files.length===0)return;
-const fd=new FormData();
-for(let f of files)fd.append('file',f);
-updateProgress(0);
-try{
-const xhr=new XMLHttpRequest();
-const p=new Promise((resolve,reject)=>{
-xhr.open('POST','/upload/'+roomCode,true);
-xhr.upload.onprogress=(e)=>{if(e.lengthComputable){const percent=Math.round((e.loaded/e.total)*100);updateProgress(percent);}};
-xhr.onload=()=>{if(xhr.status===200){try{resolve(JSON.parse(xhr.responseText));}catch(err){reject(new Error('Invalid response'));}}else{try{const err=JSON.parse(xhr.responseText);reject(new Error(err.detail||'Upload failed'));}catch(err){reject(new Error('Upload failed: '+xhr.status));}}};
-xhr.onerror=()=>reject(new Error('Network error'));
-xhr.send(fd);
-});
-const result=await p;
-updateProgress(100);
-setTimeout(()=>updateProgress(0),1000);
-if(result.uploaded)result.uploaded.forEach(f=>sendFile(f.file_url,f.original_name,f.file_size));
-if(result.errors&&result.errors.length>0)result.errors.forEach(err=>console.warn('Upload error:',err));
-}catch(err){console.error('Upload error:',err);updateProgress(0);showError('Upload thất bại: '+err.message);}
+    if(!files||files.length===0)return;
+    
+    const formData=new FormData();
+    for(let f of files){
+        formData.append('file',f);
+    }
+    
+    updateProgress(0);
+    
+    try{
+        const xhr=new XMLHttpRequest();
+        const uploadPromise=new Promise((resolve,reject)=>{
+            xhr.open('POST','/upload/'+roomCode,true);
+            
+            xhr.upload.onprogress=(e)=>{
+                if(e.lengthComputable){
+                    const percent=Math.round((e.loaded/e.total)*100);
+                    updateProgress(percent);
+                }
+            };
+            
+            xhr.onload=()=>{
+                if(xhr.status===200){
+                    try{
+                        const response=JSON.parse(xhr.responseText);
+                        resolve(response);
+                    }catch(err){
+                        reject(new Error('Invalid response'));
+                    }
+                }else{
+                    try{
+                        const error=JSON.parse(xhr.responseText);
+                        reject(new Error(error.detail||'Upload failed'));
+                    }catch(err){
+                        reject(new Error('Upload failed with status: '+xhr.status));
+                    }
+                }
+            };
+            
+            xhr.onerror=()=>{
+                reject(new Error('Network error during upload'));
+            };
+            
+            xhr.send(formData);
+        });
+        
+        const result=await uploadPromise;
+        updateProgress(100);
+        setTimeout(()=>updateProgress(0),1000);
+        
+        // ✅ Gửi URL file qua WebSocket sau khi upload thành công
+        if(result.uploaded&&result.uploaded.length>0){
+            result.uploaded.forEach(file=>{
+                sendFile(file.file_url,file.original_name,file.file_size);
+            });
+        }
+        
+        if(result.errors&&result.errors.length>0){
+            result.errors.forEach(err=>{
+                console.warn('Upload error:',err);
+                showError('Upload lỗi: '+err.error);
+            });
+        }
+    }catch(err){
+        console.error('Upload error:',err);
+        updateProgress(0);
+        showError('Upload thất bại: '+err.message);
+    }
 }
 
 // ===== Join Room =====
@@ -605,9 +637,16 @@ async def check_room(request: Request):
 
 @app.post("/upload/{room_key}")
 async def upload_file(room_key: str, files: List[UploadFile] = File(...)):
+    print(f"[UPLOAD] Room key: {room_key}")
+    print(f"[UPLOAD] ROOM_KEY: {ROOM_KEY}")
+    print(f"[UPLOAD] Files count: {len(files)}")
+    
     if room_key != ROOM_KEY:
+        print(f"[UPLOAD] Invalid room key!")
         raise HTTPException(status_code=404, detail="Room not found")
+    
     if not files:
+        print(f"[UPLOAD] No files!")
         raise HTTPException(status_code=400, detail="No files provided")
     
     uploaded_files = []
@@ -615,24 +654,33 @@ async def upload_file(room_key: str, files: List[UploadFile] = File(...)):
     
     for file in files:
         try:
+            print(f"[UPLOAD] Processing file: {file.filename}")
             original_name = sanitize_filename(file.filename)
             if not original_name:
                 continue
+            
             content = await file.read()
             file_size = len(content)
+            print(f"[UPLOAD] File size: {file_size} bytes")
+            
             if file_size > MAX_FILE_SIZE:
                 errors.append({
                     "filename": original_name,
                     "error": f"File exceeds maximum size of {format_file_size(MAX_FILE_SIZE)}"
                 })
                 continue
+            
             ext = get_file_extension(original_name)
             unique_name = f"{uuid.uuid4().hex}{ext}"
             file_path = FILES_DIR / unique_name
+            
             with open(file_path, "wb") as f:
                 f.write(content)
+            
             actual_size = file_path.stat().st_size
             file_url = f"/files/{room_key}/{unique_name}"
+            print(f"[UPLOAD] File saved: {file_path}, URL: {file_url}")
+            
             uploaded_files.append({
                 "file_url": file_url,
                 "original_name": original_name,
@@ -641,6 +689,7 @@ async def upload_file(room_key: str, files: List[UploadFile] = File(...)):
                 "file_type": get_file_type(original_name)
             })
         except Exception as e:
+            print(f"[UPLOAD] Error: {e}")
             errors.append({
                 "filename": file.filename,
                 "error": str(e)
@@ -649,6 +698,7 @@ async def upload_file(room_key: str, files: List[UploadFile] = File(...)):
     if errors and not uploaded_files:
         raise HTTPException(status_code=400, detail=errors[0]["error"])
     
+    print(f"[UPLOAD] Success: {len(uploaded_files)} files, Errors: {len(errors)}")
     return JSONResponse({
         "uploaded": uploaded_files,
         "errors": errors if errors else None
@@ -669,7 +719,7 @@ async def get_file(room_key: str, filename: str):
     return FileResponse(file_path, media_type=content_type)
 
 # ===================================================
-# WebSocket Endpoint - ĐÃ SỬA LỖI KẸT
+# WebSocket Endpoint
 # ===================================================
 
 @app.websocket("/ws/{room_key}")
@@ -688,14 +738,12 @@ async def websocket_endpoint(websocket: WebSocket, room_key: str):
         await websocket.accept()
         CLIENTS.add(websocket)
         
-        # Gửi lịch sử (giới hạn 100 tin nhắn)
         history_data = {
             "type": "history",
             "data": MESSAGES[-MAX_HISTORY:] if MESSAGES else []
         }
         await websocket.send_text(json.dumps(history_data))
         
-        # Thông báo tham gia
         join_msg = {
             "type": "system",
             "content": f"{username} đã tham gia phòng",
@@ -706,7 +754,6 @@ async def websocket_endpoint(websocket: WebSocket, room_key: str):
             MESSAGES = MESSAGES[-MAX_HISTORY:]
         await broadcast(join_msg)
         
-        # Vòng lặp nhận tin nhắn với timeout
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
