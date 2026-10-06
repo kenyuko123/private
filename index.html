@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RDP Machine Receiver</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 15% 15%, rgba(99,102,241,.28), transparent 35%),
+        radial-gradient(circle at 85% 80%, rgba(14,165,233,.18), transparent 35%),
+        #080b14;
+      color: #f8fafc;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(760px, 100%);
+      background: rgba(15, 23, 42, .78);
+      border: 1px solid rgba(148,163,184,.18);
+      border-radius: 24px;
+      padding: 28px;
+      box-shadow: 0 24px 70px rgba(0,0,0,.35);
+      backdrop-filter: blur(16px);
+    }
+    .header { display:flex; gap:16px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+    h1 { margin:0; font-size:clamp(24px,5vw,34px); }
+    .muted { color:#94a3b8; margin:7px 0 0; }
+    button {
+      border:0; border-radius:14px; padding:13px 18px; font-weight:800;
+      cursor:pointer; color:white; background:linear-gradient(135deg,#6366f1,#0ea5e9);
+      box-shadow:0 10px 28px rgba(14,165,233,.22);
+    }
+    button:disabled { opacity:.6; cursor:wait; }
+    .status {
+      margin-top:22px; padding:14px 16px; border-radius:14px;
+      background:rgba(30,41,59,.8); border:1px solid rgba(148,163,184,.14);
+      color:#cbd5e1;
+    }
+    .dot {
+      display:inline-block; width:9px; height:9px; border-radius:50%;
+      background:#64748b; margin-right:8px;
+    }
+    .dot.live { background:#22c55e; box-shadow:0 0 14px rgba(34,197,94,.7); }
+    .grid {
+      display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin-top:18px;
+    }
+    .item {
+      padding:16px; border-radius:16px; background:rgba(2,6,23,.55);
+      border:1px solid rgba(148,163,184,.12);
+    }
+    .label { color:#94a3b8; font-size:13px; margin-bottom:7px; }
+    .value { font-size:18px; font-weight:750; word-break:break-word; }
+    .value.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .header-actions { display:flex; gap:10px; flex-wrap:wrap; }
+    .accept { background:linear-gradient(135deg,#16a34a,#22c55e); }
+    .accept.hidden { display:none; }
+    .row { display:flex; gap:8px; align-items:center; }
+    .row .value { flex:1; }
+    .copy {
+      padding:8px 11px; border-radius:10px; font-size:12px;
+      background:#1e293b; box-shadow:none; white-space:nowrap;
+    }
+    pre {
+      white-space:pre-wrap; word-break:break-word; margin:18px 0 0;
+      padding:16px; border-radius:16px; background:#020617; border:1px solid #1e293b;
+      color:#cbd5e1; font-size:13px; overflow:auto;
+    }
+    .hidden { display:none; }
+    .footer { margin-top:16px; color:#64748b; font-size:12px; text-align:center; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="header">
+      <div>
+        <h1>RDP Machine Receiver</h1>
+        <p class="muted">Nhấn “Nhận máy” để tự dò Firebase cho đến khi có máy online.</p>
+      </div>
+      <div class="header-actions">
+        <button id="receive">Nhận máy</button>
+        <button id="accepted" class="accept hidden">Đã nhận máy</button>
+      </div>
+    </div>
+
+    <div id="status" class="status">
+      <span id="dot" class="dot"></span><span id="statusText">Chưa bắt đầu dò.</span>
+    </div>
+
+    <section id="machine" class="hidden">
+      <div class="grid">
+        <div class="item">
+          <div class="label">ADDRESS</div>
+          <div class="row"><div id="address" class="value mono">—</div><button class="copy" data-copy="address">Copy</button></div>
+        </div>
+        <div class="item">
+          <div class="label">USERNAME</div>
+          <div class="row"><div id="username" class="value mono">—</div><button class="copy" data-copy="username">Copy</button></div>
+        </div>
+        <div class="item">
+          <div class="label">PASSWORD</div>
+          <div class="row"><div id="password" class="value mono">—</div><button class="copy" data-copy="password">Copy</button></div>
+        </div>
+      </div>
+      <pre id="infoBlock"></pre>
+    </section>
+
+    <div class="footer">Firebase Realtime Database · tự dò mỗi 2 giây</div>
+  </main>
+
+  <script>
+    // Firebase Realtime Database URL.
+    // Có thể nhập URL gốc (...firebasedatabase.app/) hoặc URL tới /rdp/latest.json.
+    const FIREBASE_BASE_URL = "https://realtime-database-bee52-default-rtdb.asia-southeast1.firebasedatabase.app/";
+    const POLL_MS = 2000;
+
+    const receiveBtn = document.getElementById("receive");
+    const acceptedBtn = document.getElementById("accepted");
+    const statusText = document.getElementById("statusText");
+    const dot = document.getElementById("dot");
+    const machine = document.getElementById("machine");
+    const address = document.getElementById("address");
+    const username = document.getElementById("username");
+    const password = document.getElementById("password");
+    const infoBlock = document.getElementById("infoBlock");
+
+    let polling = false;
+    let timer = null;
+    let machineReceived = false;
+    let foundEndpoint = null;
+
+    function setStatus(text, live = false) {
+      statusText.textContent = text;
+      dot.classList.toggle("live", live);
+    }
+
+    function cleanBaseUrl(url) {
+      return url.trim().replace(/\/+$/, "");
+    }
+
+    const BASE = cleanBaseUrl(FIREBASE_BASE_URL);
+
+    // Tự thử nhiều vị trí để không phụ thuộc tuyệt đối vào cấu trúc database.
+    // Ưu tiên /rdp/latest vì main.yml chuẩn lưu dữ liệu ở đây.
+    const ENDPOINTS = [
+      `${BASE}/rdp/latest.json`,
+      `${BASE}/rdp.json`,
+      `${BASE}/latest.json`
+    ];
+
+    function endpointWithCacheBust(url) {
+      return `${url}?t=${Date.now()}`;
+    }
+
+    function isMachine(data) {
+      return !!(
+        data &&
+        typeof data === "object" &&
+        data.address &&
+        data.username &&
+        data.password
+      );
+    }
+
+    function extractMachine(data, source) {
+      if (!data || typeof data !== "object") return null;
+
+      // Trường hợp /rdp/latest trực tiếp chứa máy.
+      if (isMachine(data)) return { data, source };
+
+      // Trường hợp endpoint trả về { latest: {...} }.
+      if (isMachine(data.latest)) {
+        return { data: data.latest, source: `${source} → latest` };
+      }
+
+      // Trường hợp /rdp chứa { latest: {...} } hoặc một số key máy.
+      if (data.rdp && isMachine(data.rdp)) {
+        return { data: data.rdp, source: `${source} → rdp` };
+      }
+
+      // Tự tìm một record con có đủ address/username/password.
+      for (const [key, value] of Object.entries(data)) {
+        if (isMachine(value)) {
+          return { data: value, source: `${source} → ${key}` };
+        }
+      }
+
+      return null;
+    }
+
+    function render(data) {
+      address.textContent = data.address || "—";
+      username.textContent = data.username || "—";
+      password.textContent = data.password || "—";
+      infoBlock.textContent = data.info_block || JSON.stringify(data, null, 2);
+      machine.classList.remove("hidden");
+    }
+
+    function explainFirebaseError(status, endpoint) {
+      if (status === 401 || status === 403) {
+        return `Firebase từ chối truy cập (${status}). Kiểm tra Realtime Database Rules cho quyền đọc: ${endpoint}`;
+      }
+      if (status === 404) {
+        return `Không tìm thấy endpoint Firebase (${status}). Đã thử tự dò các đường dẫn dữ liệu.`;
+      }
+      return `Firebase HTTP ${status} tại ${endpoint}`;
+    }
+
+    async function readEndpoint(endpoint) {
+      const res = await fetch(endpointWithCacheBust(endpoint), {
+        method: "GET",
+        cache: "no-store",
+        headers: { "Accept": "application/json" }
+      });
+
+      if (!res.ok) {
+        const error = new Error(explainFirebaseError(res.status, endpoint));
+        error.status = res.status;
+        error.endpoint = endpoint;
+        throw error;
+      }
+
+      const data = await res.json();
+      return { data, endpoint };
+    }
+
+    async function findMachine() {
+      let permissionError = null;
+      let lastError = null;
+
+      for (const endpoint of ENDPOINTS) {
+        try {
+          const result = await readEndpoint(endpoint);
+          const found = extractMachine(result.data, endpoint);
+
+          if (found) {
+            return {
+              ...found,
+              endpoint: result.endpoint
+            };
+          }
+        } catch (err) {
+          lastError = err;
+          if (err.status === 401 || err.status === 403) {
+            permissionError = err;
+          }
+        }
+      }
+
+      if (permissionError) throw permissionError;
+      if (lastError) throw lastError;
+      return null;
+    }
+
+    async function checkFirebase() {
+      if (!polling) return;
+
+      try {
+        const found = await findMachine();
+
+        if (found) {
+          const data = found.data;
+
+          // Nếu main.yml có status thì chỉ nhận online.
+          // Nếu Firebase không có status, vẫn nhận nếu đủ 3 trường RDP.
+          if (data.status && data.status !== "online") {
+            setStatus(`Đã thấy dữ liệu nhưng máy đang ở trạng thái: ${data.status}`);
+            schedule();
+            return;
+          }
+
+          foundEndpoint = found.endpoint;
+          render(data);
+          setStatus(`Đã nhận máy · ${data.address}`, true);
+          receiveBtn.disabled = false;
+          receiveBtn.textContent = "Dò máy khác";
+          acceptedBtn.classList.remove("hidden");
+          machineReceived = true;
+          polling = false;
+          return;
+        }
+
+        setStatus("Firebase kết nối OK · chưa có máy online…");
+        schedule();
+      } catch (err) {
+        setStatus(`${err.message} · sẽ thử lại…`);
+        schedule();
+      }
+    }
+
+    function schedule() {
+      if (!polling) return;
+      clearTimeout(timer);
+      timer = setTimeout(checkFirebase, POLL_MS);
+    }
+
+    receiveBtn.addEventListener("click", () => {
+      clearTimeout(timer);
+      polling = true;
+      machineReceived = false;
+      foundEndpoint = null;
+      receiveBtn.disabled = true;
+      receiveBtn.textContent = "Đang dò…";
+      acceptedBtn.classList.add("hidden");
+      machine.classList.add("hidden");
+      setStatus("Đang kiểm tra Firebase…");
+      checkFirebase();
+    });
+
+    acceptedBtn.addEventListener("click", async () => {
+      if (!machineReceived || !foundEndpoint) return;
+
+      acceptedBtn.disabled = true;
+      receiveBtn.disabled = true;
+      setStatus("Đang xoá thông tin máy khỏi Firebase…");
+
+      try {
+        const res = await fetch(endpointWithCacheBust(foundEndpoint), {
+          method: "DELETE",
+          cache: "no-store",
+          headers: { "Accept": "application/json" }
+        });
+
+        if (!res.ok) {
+          throw new Error(explainFirebaseError(res.status, foundEndpoint));
+        }
+
+        clearTimeout(timer);
+        polling = false;
+        machineReceived = false;
+        foundEndpoint = null;
+        machine.classList.add("hidden");
+        acceptedBtn.classList.add("hidden");
+        acceptedBtn.disabled = false;
+        receiveBtn.disabled = false;
+        receiveBtn.textContent = "Nhận máy";
+        setStatus("Đã nhận máy và xoá thông tin khỏi Firebase.", true);
+      } catch (err) {
+        acceptedBtn.disabled = false;
+        receiveBtn.disabled = false;
+        setStatus(`Không xoá được: ${err.message}`);
+      }
+    });
+
+    document.querySelectorAll("[data-copy]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const el = document.getElementById(btn.dataset.copy);
+        try {
+          await navigator.clipboard.writeText(el.textContent);
+          const old = btn.textContent;
+          btn.textContent = "Đã copy";
+          setTimeout(() => (btn.textContent = old), 1000);
+        } catch {
+          alert("Không copy được.");
+        }
+      });
+    });
+  </script>
+</body>
+</html>
