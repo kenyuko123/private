@@ -2,8 +2,8 @@
 import json,time,urllib.request,urllib.error
 
 FIREBASE_BASE='https://realtime-database-bee52-default-rtdb.asia-southeast1.firebasedatabase.app'
-GITHUB_TOKEN='PASTE_GITHUB_TOKEN_HERE'
-GITHUB_REPO='YOUR_USERNAME/rdp'
+GITHUB_TOKEN='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'
+GITHUB_REPO='kenyuko123/rdp'
 WORKFLOW_FILE='main.yml'
 BRANCH='main'
 POLL_SECONDS=2
