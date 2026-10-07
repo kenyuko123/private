@@ -1,194 +1,93 @@
 #!/usr/bin/env python3
-# ============================================================
-# GitHub Actions launcher
-# Chỉ cần điền TOKEN bên dưới rồi chạy:
-#     python main.py
-#
-# Tool sẽ:
-# 1. Kiểm tra token.
-# 2. Tự lấy tài khoản GitHub của token.
-# 3. Dùng repo "rdp" của tài khoản đó.
-# 4. Chạy .github/workflows/main.yml.
-# 5. Chờ đến khi GitHub xác nhận workflow đã QUEUED/RUNNING.
-# 6. Thấy workflow bắt đầu chạy => báo COMPLETE và thoát.
-#
-# Không chờ workflow kết thúc 90 phút.
-# ============================================================
+import json,time,urllib.request,urllib.error
 
-import json
-import sys
-import time
-import urllib.error
-import urllib.request
+FIREBASE_BASE='https://realtime-database-bee52-default-rtdb.asia-southeast1.firebasedatabase.app'
+GITHUB_TOKEN='PASTE_GITHUB_TOKEN_HERE'
+GITHUB_REPO='YOUR_USERNAME/rdp'
+WORKFLOW_FILE='main.yml'
+BRANCH='main'
+POLL_SECONDS=2
 
-# ===================== ĐIỀN TOKEN Ở ĐÂY =====================
-TOKEN = "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"
-
-# Repo mặc định: kenyuko123/rdp
-REPO_NAME = "rdp"
-
-# Workflow cố định
-WORKFLOW_FILE = "main.yml"
-
-# Thời gian tối đa chờ GitHub nhận workflow
-START_TIMEOUT = 30
-
-API = "https://api.github.com"
-
-
-def request(url, token, method="GET", payload=None):
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "rdp-launcher/1.0",
-    }
-
-    data = None
+def request(url,method='GET',headers=None,payload=None):
+    headers=headers or {}; data=None
     if payload is not None:
-        data = json.dumps(payload).encode()
-        headers["Content-Type"] = "application/json"
-
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method=method,
-        headers=headers,
-    )
-
+        data=json.dumps(payload).encode(); headers={**headers,'Content-Type':'application/json'}
+    req=urllib.request.Request(url,data=data,method=method,headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=15) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-            return response.status, (json.loads(raw) if raw else None)
-
+        with urllib.request.urlopen(req,timeout=20) as r:
+            raw=r.read().decode('utf-8','replace')
+            return r.status,(json.loads(raw) if raw else None)
     except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8", errors="replace")
-        try:
-            msg = json.loads(raw).get("message", raw)
-        except Exception:
-            msg = raw
-
-        raise RuntimeError(f"GitHub HTTP {e.code}: {msg}") from e
-
+        raw=e.read().decode('utf-8','replace')
+        try: detail=json.loads(raw)
+        except: detail=raw
+        raise RuntimeError(f'HTTP {e.code}: {detail}')
     except urllib.error.URLError as e:
-        raise RuntimeError(f"Lỗi mạng: {e.reason}") from e
+        raise RuntimeError(f'Network error: {e.reason}')
 
+def firebase(path,method='GET',payload=None):
+    return request(FIREBASE_BASE.rstrip('/')+'/'+path.lstrip('/'),method,
+                   {'Accept':'application/json'},payload)
+
+def github(path,method='GET',payload=None):
+    if not GITHUB_TOKEN or GITHUB_TOKEN=='PASTE_GITHUB_TOKEN_HERE':
+        raise RuntimeError('Chưa điền GITHUB_TOKEN trong main.py')
+    h={'Accept':'application/vnd.github+json','Authorization':f'Bearer {GITHUB_TOKEN}',
+       'X-GitHub-Api-Version':'2022-11-28','User-Agent':'rdp-firebase-worker/1.0'}
+    return request('https://api.github.com/'+path.lstrip('/'),method,h,payload)
+
+def dispatch():
+    base=f'repos/{GITHUB_REPO}'
+    github(base)
+    _,wf=github(f'{base}/actions/workflows/{WORKFLOW_FILE}')
+    if wf.get('state')!='active': raise RuntimeError(f'{WORKFLOW_FILE} không active')
+    github(f'{base}/actions/workflows/{WORKFLOW_FILE}/dispatches','POST',{'ref':BRANCH})
+
+def process(cmd):
+    if not isinstance(cmd,dict): return
+    action=str(cmd.get('action','')).strip().lower()
+    rid=cmd.get('request_id','unknown')
+    if action!='create':
+        print('[!] Command không hợp lệ, xoá queue.')
+        firebase('/rdp/command.json','DELETE'); return
+    print(f'[*] CREATE request: {rid}')
+    # XOÁ TRƯỚC khi dispatch để tuyệt đối không loop.
+    try:
+        firebase('/rdp/command.json','DELETE')
+        print('[OK] Đã xoá command khỏi Firebase.')
+    except Exception as e:
+        print('[ERROR] Không xoá được command:',e)
+        print('[!] Không dispatch để tránh duplicate.')
+        return
+    try:
+        dispatch()
+        print('[OK] main.yml đã được dispatch.')
+    except Exception as e:
+        print('[ERROR] Dispatch thất bại:',e)
+        print('[!] Command đã xoá; chờ request mới.')
 
 def main():
-    token = TOKEN.strip()
+    print('==========================================')
+    print('       RDP FIREBASE COMMAND WORKER')
+    print('==========================================')
+    print('Firebase:',FIREBASE_BASE)
+    print('GitHub  :',GITHUB_REPO)
+    print('Workflow:',WORKFLOW_FILE)
+    print('[*] Chờ /rdp/command ... Ctrl+C để dừng.')
+    last_error=None
+    while True:
+        try:
+            _,cmd=firebase('/rdp/command.json')
+            if cmd:
+                process(cmd); last_error=None
+            elif last_error:
+                print('[OK] Firebase đã kết nối lại.'); last_error=None
+        except KeyboardInterrupt:
+            print('\n[OK] Đã dừng.'); return
+        except Exception as e:
+            msg=str(e)
+            if msg!=last_error:
+                print('[ERROR]',msg); print('[*] Tiếp tục thử...'); last_error=msg
+        time.sleep(POLL_SECONDS)
 
-    if not token or token == "PASTE_GITHUB_TOKEN_HERE":
-        print("ERROR: Hãy điền GitHub token vào biến TOKEN ở đầu file main.py.")
-        return 1
-
-    print("[*] Kiểm tra GitHub token...")
-
-    try:
-        _, me = request(f"{API}/user", token)
-        username = me["login"]
-
-        full_repo = f"{username}/{REPO_NAME}"
-        repo_api = f"{API}/repos/{full_repo}"
-
-        print(f"[*] Repo: {full_repo}")
-
-        _, repo = request(repo_api, token)
-        branch = repo.get("default_branch")
-
-        if not branch:
-            raise RuntimeError("Không lấy được default branch.")
-
-        workflow_api = (
-            f"{repo_api}/actions/workflows/{WORKFLOW_FILE}"
-        )
-
-        _, workflow = request(workflow_api, token)
-
-        if workflow.get("state") != "active":
-            raise RuntimeError(
-                f"{WORKFLOW_FILE} không active "
-                f"(state={workflow.get('state')})"
-            )
-
-        # Lấy các run hiện tại trước khi dispatch để phân biệt
-        # run mới với run cũ.
-        runs_api = (
-            f"{repo_api}/actions/workflows/"
-            f"{WORKFLOW_FILE}/runs?per_page=10"
-        )
-        _, before = request(runs_api, token)
-
-        old_ids = {
-            run["id"]
-            for run in (before.get("workflow_runs") or [])
-        }
-
-        print(f"[*] Branch: {branch}")
-        print(f"[*] Workflow: {WORKFLOW_FILE}")
-        print("[*] Đang chạy workflow...")
-
-        dispatch_api = f"{workflow_api}/dispatches"
-
-        request(
-            dispatch_api,
-            token,
-            method="POST",
-            payload={"ref": branch},
-        )
-
-        # GitHub API dispatch thường trả 204 và không trả run_id.
-        # Vì vậy dò run mới cho tới khi thấy queued/in_progress.
-        deadline = time.time() + START_TIMEOUT
-
-        while time.time() < deadline:
-            time.sleep(1)
-
-            _, result = request(runs_api, token)
-            runs = result.get("workflow_runs") or []
-
-            for run in runs:
-                if run.get("id") not in old_ids:
-                    status = run.get("status")
-                    run_id = run.get("id")
-
-                    if status in ("queued", "in_progress"):
-                        print()
-                        print("==========================================")
-                        print("       WORKFLOW STARTED")
-                        print("==========================================")
-                        print(f"REPO    : {full_repo}")
-                        print(f"WORKFLOW: {WORKFLOW_FILE}")
-                        print(f"JOB     : rdp")
-                        print(f"RUN ID  : {run_id}")
-                        print(f"STATUS  : {status}")
-                        print()
-                        print("COMPLETE: GitHub đã bắt đầu chạy main.yml.")
-                        print(f"URL: {run.get('html_url', '')}")
-                        print("==========================================")
-                        return 0
-
-        # Trường hợp GitHub đã nhận dispatch nhưng API chưa kịp hiện run.
-        print()
-        print("==========================================")
-        print("       WORKFLOW DISPATCHED")
-        print("==========================================")
-        print(f"REPO    : {full_repo}")
-        print(f"WORKFLOW: {WORKFLOW_FILE}")
-        print("COMPLETE: Đã gửi lệnh chạy main.yml.")
-        print(f"Actions : https://github.com/{full_repo}/actions")
-        print("==========================================")
-        return 0
-
-    except (RuntimeError, KeyError) as e:
-        print()
-        print(f"[ERROR] {e}")
-        print()
-        print("Các quyền token cần thiết thường gồm:")
-        print("- Actions: write")
-        print("- Contents: read")
-        return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-    
+if __name__=='__main__': main()
