@@ -1,93 +1,197 @@
 #!/usr/bin/env python3
-import json,time,urllib.request,urllib.error
 
-FIREBASE_BASE='https://realtime-database-bee52-default-rtdb.asia-southeast1.firebasedatabase.app'
-GITHUB_TOKEN='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'
-GITHUB_REPO='kenyuko123/rdp'
-WORKFLOW_FILE='main.yml'
-BRANCH='main'
-POLL_SECONDS=2
+import json
+import time
+import urllib.request
+import urllib.error
 
-def request(url,method='GET',headers=None,payload=None):
-    headers=headers or {}; data=None
-    if payload is not None:
-        data=json.dumps(payload).encode(); headers={**headers,'Content-Type':'application/json'}
-    req=urllib.request.Request(url,data=data,method=method,headers=headers)
+FIREBASE = "https://realtime-database-bee52-default-rtdb.asia-southeast1.firebasedatabase.app"
+TOKEN = "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"
+REPO = "kenyuko123/rdp"
+WORKFLOW = "main.yml"
+BRANCH = "main"
+
+POLL = 2
+RETRY = 3
+
+
+def http(url, method="GET", headers=None, data=None):
+    body = None
+
+    if data is not None:
+        body = json.dumps(data).encode()
+        headers = {
+            **(headers or {}),
+            "Content-Type": "application/json"
+        }
+
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers=headers or {}
+    )
+
     try:
-        with urllib.request.urlopen(req,timeout=20) as r:
-            raw=r.read().decode('utf-8','replace')
-            return r.status,(json.loads(raw) if raw else None)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            raw = r.read().decode("utf-8", "replace")
+            try:
+                raw = json.loads(raw) if raw else None
+            except Exception:
+                pass
+            return r.status, raw
+
     except urllib.error.HTTPError as e:
-        raw=e.read().decode('utf-8','replace')
-        try: detail=json.loads(raw)
-        except: detail=raw
-        raise RuntimeError(f'HTTP {e.code}: {detail}')
+        raw = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"HTTP {e.code}: {raw}")
+
     except urllib.error.URLError as e:
-        raise RuntimeError(f'Network error: {e.reason}')
+        raise RuntimeError(f"Network error: {e.reason}")
 
-def firebase(path,method='GET',payload=None):
-    return request(FIREBASE_BASE.rstrip('/')+'/'+path.lstrip('/'),method,
-                   {'Accept':'application/json'},payload)
 
-def github(path,method='GET',payload=None):
-    if not GITHUB_TOKEN or GITHUB_TOKEN=='PASTE_GITHUB_TOKEN_HERE':
-        raise RuntimeError('Chưa điền GITHUB_TOKEN trong main.py')
-    h={'Accept':'application/vnd.github+json','Authorization':f'Bearer {GITHUB_TOKEN}',
-       'X-GitHub-Api-Version':'2022-11-28','User-Agent':'rdp-firebase-worker/1.0'}
-    return request('https://api.github.com/'+path.lstrip('/'),method,h,payload)
+def fb(method="GET", data=None):
+    return http(
+        FIREBASE + "/rdp/command.json",
+        method,
+        {"Accept": "application/json"},
+        data
+    )
+
+
+def gh(path, method="GET", data=None):
+    if not TOKEN or TOKEN == "YOUR_NEW_TOKEN":
+        raise RuntimeError("Chưa nhập GitHub token mới")
+
+    return http(
+        "https://api.github.com/" + path,
+        method,
+        {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {TOKEN}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "firebase-rdp-worker"
+        },
+        data
+    )
+
 
 def dispatch():
-    base=f'repos/{GITHUB_REPO}'
-    github(base)
-    _,wf=github(f'{base}/actions/workflows/{WORKFLOW_FILE}')
-    if wf.get('state')!='active': raise RuntimeError(f'{WORKFLOW_FILE} không active')
-    github(f'{base}/actions/workflows/{WORKFLOW_FILE}/dispatches','POST',{'ref':BRANCH})
+    path = (
+        f"repos/{REPO}/actions/workflows/"
+        f"{WORKFLOW}/dispatches"
+    )
 
-def process(cmd):
-    if not isinstance(cmd,dict): return
-    action=str(cmd.get('action','')).strip().lower()
-    rid=cmd.get('request_id','unknown')
-    if action!='create':
-        print('[!] Command không hợp lệ, xoá queue.')
-        firebase('/rdp/command.json','DELETE'); return
-    print(f'[*] CREATE request: {rid}')
-    # XOÁ TRƯỚC khi dispatch để tuyệt đối không loop.
-    try:
-        firebase('/rdp/command.json','DELETE')
-        print('[OK] Đã xoá command khỏi Firebase.')
-    except Exception as e:
-        print('[ERROR] Không xoá được command:',e)
-        print('[!] Không dispatch để tránh duplicate.')
+    last = None
+
+    for i in range(1, RETRY + 1):
+        try:
+            status, _ = gh(
+                path,
+                "POST",
+                {"ref": BRANCH}
+            )
+
+            if 200 <= status < 300:
+                print(f"[OK] main.yml dispatch HTTP {status}")
+                return True
+
+            raise RuntimeError(
+                f"GitHub dispatch HTTP {status}"
+            )
+
+        except Exception as e:
+            last = e
+            print(f"[!] Dispatch lỗi ({i}/{RETRY}): {e}")
+
+            if i < RETRY:
+                time.sleep(2)
+
+    raise RuntimeError(last)
+
+
+def process(cmd, done):
+    if not isinstance(cmd, dict):
+        print("[!] Command lỗi -> xoá")
+        fb("DELETE")
         return
+
+    action = str(cmd.get("action", "")).lower().strip()
+    rid = str(cmd.get("request_id", "unknown"))
+
+    print(f"\n[*] {action} | request_id={rid}")
+
+    if action != "create":
+        print("[!] Action không hợp lệ -> xoá")
+        fb("DELETE")
+        return
+
+    # Đã dispatch trước đó nhưng DELETE Firebase thất bại
+    if rid in done:
+        try:
+            fb("DELETE")
+            print("[OK] Đã xoá command còn sót")
+        except Exception as e:
+            print("[!] DELETE:", e)
+        return
+
+    # --------------------------------------------------------
+    # QUAN TRỌNG:
+    # DISPATCH TRƯỚC
+    # DELETE SAU
+    # --------------------------------------------------------
+
     try:
         dispatch()
-        print('[OK] main.yml đã được dispatch.')
     except Exception as e:
-        print('[ERROR] Dispatch thất bại:',e)
-        print('[!] Command đã xoá; chờ request mới.')
+        print("[ERROR] Không dispatch được:", e)
+        print("[*] Giữ nguyên Firebase để thử lại")
+        return
+
+    # Đánh dấu ngay sau khi GitHub chấp nhận dispatch
+    done.add(rid)
+
+    try:
+        fb("DELETE")
+        print("[OK] Dispatch thành công -> đã xoá Firebase")
+    except Exception as e:
+        print("[!] Dispatch OK nhưng DELETE Firebase lỗi:", e)
+        print("[*] Không dispatch lại request này")
+
 
 def main():
-    print('==========================================')
-    print('       RDP FIREBASE COMMAND WORKER')
-    print('==========================================')
-    print('Firebase:',FIREBASE_BASE)
-    print('GitHub  :',GITHUB_REPO)
-    print('Workflow:',WORKFLOW_FILE)
-    print('[*] Chờ /rdp/command ... Ctrl+C để dừng.')
-    last_error=None
+    print("=" * 45)
+    print("   RDP FIREBASE → GITHUB ACTIONS WORKER")
+    print("=" * 45)
+    print(f"Repo: {REPO}")
+    print(f"Workflow: {WORKFLOW}")
+    print(f"Branch: {BRANCH}")
+    print("[*] Waiting for /rdp/command ...")
+    print()
+
+    done = set()
+    last_error = None
+
     while True:
         try:
-            _,cmd=firebase('/rdp/command.json')
-            if cmd:
-                process(cmd); last_error=None
-            elif last_error:
-                print('[OK] Firebase đã kết nối lại.'); last_error=None
-        except KeyboardInterrupt:
-            print('\n[OK] Đã dừng.'); return
-        except Exception as e:
-            msg=str(e)
-            if msg!=last_error:
-                print('[ERROR]',msg); print('[*] Tiếp tục thử...'); last_error=msg
-        time.sleep(POLL_SECONDS)
+            _, cmd = fb()
 
-if __name__=='__main__': main()
+            if cmd:
+                process(cmd, done)
+                last_error = None
+
+        except KeyboardInterrupt:
+            print("\n[OK] Stopped")
+            break
+
+        except Exception as e:
+            msg = str(e)
+
+            if msg != last_error:
+                print("[ERROR]", msg)
+                last_error = msg
+
+        time.sleep(POLL)
+
+
+if __name__ == "__main__":
+    main()
